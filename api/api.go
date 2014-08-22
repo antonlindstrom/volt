@@ -93,15 +93,35 @@ func (api *API) tasksAdd(w http.ResponseWriter, r *http.Request) {
 	api.Unlock()
 
 	f := func() error {
-		var resources = api.m.BuildResources(task.Cpus, task.Mem, task.Disk)
-		offers, err := api.m.RequestOffers(resources)
-		if err != nil {
-			return err
+		var (
+			resources                               = api.m.FloatsToResources(task.Cpus, task.Mem, task.Disk)
+			combinedCpus, combinedMem, combinedDisk float64
+			combinedOffers                          = []*mesosproto.Offer{}
+		)
+
+		for {
+			offers, err := api.m.RequestOffers(resources)
+			if err != nil {
+				return err
+			}
+			combinedOffers = append(combinedOffers, offers...)
+
+			combinedCpus, combinedMem, combinedDisk = 0, 0, 0
+			for i, offer := range combinedOffers {
+				cpus, mem, disk := api.m.ResourcesToFloats(offer.Resources)
+				combinedCpus += cpus
+				combinedMem += mem
+				combinedDisk += disk
+
+				if combinedCpus >= task.Cpus && combinedMem >= task.Mem && combinedDisk >= task.Disk {
+					if i < len(offers)-1 {
+						api.m.DeclineOffers(combinedOffers[i+1:])
+					}
+					return api.m.LaunchTask(combinedOffers[:i+1], resources, task.Command, task.ID, task.DockerImage)
+				}
+			}
 		}
-		if len(offers) > 0 {
-			task.SlaveId = offers[0].SlaveId.Value
-			return api.m.LaunchTask(offers[0], resources, task.Command, task.ID, task.DockerImage)
-		}
+
 		return fmt.Errorf("No offers available")
 	}
 	if len(task.Files) > 0 {
